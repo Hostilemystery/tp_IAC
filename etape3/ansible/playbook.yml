@@ -1,0 +1,109 @@
+---
+- name: Configure Docker and deploy containers
+  hosts: web
+  become: yes
+
+  tasks:
+    - name: Install required packages
+      yum:
+        name:
+          - docker
+          - git
+        state: present
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    - name: Pull NGINX image
+      docker_image:
+        name: nginx
+        tag: latest
+        source: pull
+
+    - name: Pull PHP-FPM image
+      docker_image:
+        name: php
+        tag: fpm
+        source: pull
+
+    - name: Create application directory
+      file:
+        path: /home/ec2-user/app
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Upload index.php
+      copy:
+        dest: /home/ec2-user/app/index.php
+        content: |
+          <?php
+          phpinfo();
+          ?>
+
+    - name: Run PHP-FPM container
+      docker_container:
+        name: php-fpm
+        image: php:fpm
+        state: started
+        restart_policy: always
+        volumes:
+          - /home/ec2-user/app:/app
+        networks:
+          - name: my_network
+        exposed_ports:
+          - "9000"
+
+    - name: Run NGINX container
+      docker_container:
+        name: nginx-http
+        image: nginx:latest
+        state: started
+        restart_policy: always
+        ports:
+          - "8080:80"
+        volumes:
+          - /home/ec2-user/app:/app
+          - /home/ec2-user/app/nginx.conf:/etc/nginx/conf.d/default.conf
+        networks:
+          - name: my_network
+
+    - name: Create Docker network
+      docker_network:
+        name: my_network
+        state: present
+
+    - name: Upload nginx.conf
+      copy:
+        dest: /home/ec2-user/app/nginx.conf
+        content: |
+          server {
+              listen 80;
+              server_name localhost;
+
+              root /app;
+              index index.php index.html index.htm;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              location ~ \.php$ {
+                  root           /app;
+                  fastcgi_pass   php-fpm:9000;
+                  fastcgi_index  index.php;
+                  fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  include        fastcgi_params;
+              }
+          }
+
